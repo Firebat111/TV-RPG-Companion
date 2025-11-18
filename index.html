@@ -1,0 +1,628 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>D&D Fog of War Map Tool</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+      body { overscroll-behavior: none; }
+      /* For custom scrollbars in the playlist */
+      .map-playlist::-webkit-scrollbar { width: 8px; }
+      .map-playlist::-webkit-scrollbar-track { background: #1f2937; } /* bg-gray-800 */
+      .map-playlist::-webkit-scrollbar-thumb { background: #4b5563; border-radius: 4px; } /* bg-gray-600 */
+      .map-playlist::-webkit-scrollbar-thumb:hover { background: #6b7280; } /* bg-gray-500 */
+    </style>
+    <!-- Load React, ReactDOM, and Babel for in-browser JSX/TSX transpilation -->
+    <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  </head>
+  <body class="bg-gray-900 text-white antialiased">
+    <div id="root"></div>
+
+    <script type="text/babel" data-type="module">
+      // --- TYPE DEFINITIONS ---
+      interface MapState {
+        mapUrl: string | null;
+        mapType: 'image' | 'video' | null;
+        mapAspectRatio: number;
+        zoom: number;
+        pan: { x: number; y: number };
+        rotation: number;
+        gridVisible: boolean;
+        gridSize: number;
+        gridColor: string;
+        gridOpacity: number;
+        fogEnabled: boolean;
+        fogShapes: FogShape[];
+      }
+      
+      interface FogShape {
+        type: 'reveal' | 'hide';
+        x: number;
+        y: number;
+        width: number;
+        height: number;
+      }
+
+      interface Rect {
+        x: number;
+        y: number;
+        width: number;
+        height: number;
+      }
+
+      // --- HOOKS ---
+      // Custom hook to manage and synchronize map state between DM and Player views.
+      const useMapSync = (mode) => {
+        const { useState, useEffect, useRef, useCallback } = React;
+        const CHANNEL_NAME = 'dnd-map-sync-channel';
+
+        const [mapState, setMapState] = useState({
+          mapUrl: null,
+          mapType: null,
+          mapAspectRatio: 16 / 9,
+          zoom: 1,
+          pan: { x: 0, y: 0 },
+          rotation: 0,
+          gridVisible: false,
+          gridSize: 50,
+          gridColor: '#FFFFFF',
+          gridOpacity: 0.5,
+          fogEnabled: false,
+          fogShapes: [],
+        });
+
+        const channel = useRef(null);
+
+        // Effect for setting up the broadcast channel
+        useEffect(() => {
+          channel.current = new BroadcastChannel(CHANNEL_NAME);
+
+          const handleMessage = (event) => {
+            if (event.data.type === 'STATE_UPDATE' && mode === 'player') {
+              setMapState(event.data.payload);
+            }
+          };
+
+          channel.current.addEventListener('message', handleMessage);
+
+          return () => {
+            channel.current?.removeEventListener('message', handleMessage);
+            channel.current?.close();
+          };
+        }, [mode]);
+
+        // Function to broadcast state changes from the DM view
+        const broadcastState = useCallback((newState) => {
+            if (mode === 'dm' && channel.current) {
+                const message = {
+                    type: 'STATE_UPDATE',
+                    payload: newState,
+                };
+                channel.current.postMessage(message);
+            }
+        }, [mode]);
+        
+        // Central function to update state and trigger broadcast
+        const updateMapState = useCallback((update) => {
+          setMapState(currentState => {
+            const newState = typeof update === 'function' ? update(currentState) : { ...currentState, ...update };
+            broadcastState(newState);
+            return newState;
+          });
+        }, [broadcastState]);
+        
+        return { mapState, updateMapState };
+      }
+
+
+      // --- COMPONENTS ---
+      
+      // Renders a performant SVG-based fog of war overlay.
+      const FogOfWarOverlay = ({ enabled, fogShapes, isDMView = false }) => {
+        if (!enabled) return null;
+        
+        const maskId = "fog-of-war-mask";
+        const fogColor = isDMView ? 'rgba(31, 41, 55, 0.75)' : 'black';
+
+        return (
+          <svg className="absolute top-0 left-0 w-full h-full pointer-events-none">
+            <defs>
+              <mask id={maskId}>
+                {/* The mask starts white (opaque), meaning the fog layer is fully visible. */}
+                <rect x="0" y="0" width="100%" height="100%" fill="white" />
+                
+                {/* We apply shapes sequentially. 
+                    'reveal' draws black (transparent mask = no fog).
+                    'hide' draws white (opaque mask = fog). 
+                    Because they are drawn in order, later shapes overwrite earlier ones. */}
+                {fogShapes.map((shape, index) => (
+                  <rect
+                    key={`shape-${index}`}
+                    x={`${shape.x * 100}%`}
+                    y={`${shape.y * 100}%`}
+                    width={`${shape.width * 100}%`}
+                    height={`${shape.height * 100}%`}
+                    fill={shape.type === 'reveal' ? 'black' : 'white'}
+                  />
+                ))}
+              </mask>
+            </defs>
+
+            {/* The actual fog layer. */}
+            <rect x="0" y="0" width="100%" height="100%" fill={fogColor} mask={`url(#${maskId})`} />
+          </svg>
+        );
+      };
+      
+      const DrawingOverlay = ({ drawingRect, mode }) => {
+        if (!drawingRect) return null;
+        
+        const style = {
+            left: `${drawingRect.x * 100}%`,
+            top: `${drawingRect.y * 100}%`,
+            width: `${drawingRect.width * 100}%`,
+            height: `${drawingRect.height * 100}%`,
+            borderColor: mode === 'reveal' ? 'rgba(255, 255, 255, 0.7)' : 'rgba(255, 0, 0, 0.7)',
+            borderWidth: '2px',
+            borderStyle: 'dashed',
+            position: 'absolute',
+            pointerEvents: 'none',
+            zIndex: 10,
+        };
+
+        return <div style={style} />;
+      };
+
+
+      // Renders a grid overlay on top of the map.
+      const GridOverlay = ({ mapState }) => {
+        const { gridVisible, gridSize, gridColor, gridOpacity, zoom } = mapState;
+
+        if (!gridVisible || !gridSize || gridSize <= 0) return null;
+
+        const scaledGridSize = gridSize * zoom;
+        const patternId = "grid-pattern";
+        
+        return (
+          <svg className="absolute top-0 left-0 w-full h-full pointer-events-none" style={{ opacity: gridOpacity }}>
+            <defs>
+              <pattern id={patternId} patternUnits="userSpaceOnUse" width={scaledGridSize} height={scaledGridSize}>
+                <path d={`M ${scaledGridSize} 0 L 0 0 0 ${scaledGridSize}`} fill="none" stroke={gridColor} strokeWidth={zoom > 0.5 ? 1 : 0.5} />
+              </pattern>
+            </defs>
+            <rect width="100%" height="100%" fill={`url(#${patternId})`} />
+          </svg>
+        );
+      };
+
+      // The view for the players' screen. It's minimal and just displays the synced map.
+      const PlayerView = () => {
+        const { useRef } = React;
+        const { mapState } = useMapSync('player');
+        const viewRef = useRef(null);
+
+        const toggleFullscreen = () => {
+          if (!document.fullscreenElement && viewRef.current) {
+            viewRef.current.requestFullscreen().catch(err => {
+              alert(`Error attempting to enable full-screen mode: ${err.message} (${err.name})`);
+            });
+          } else if (document.fullscreenElement) {
+            document.exitFullscreen();
+          }
+        };
+        
+        const mapTransform = `translate(${mapState.pan.x}px, ${mapState.pan.y}px) scale(${mapState.zoom}) rotate(${mapState.rotation}deg)`;
+
+        return (
+          <div ref={viewRef} className="w-screen h-screen bg-black flex items-center justify-center relative group overflow-hidden">
+            {mapState.mapUrl ? (
+                <div 
+                    className="relative transition-transform duration-100 ease-linear" 
+                    style={{ 
+                        aspectRatio: mapState.mapAspectRatio, 
+                        width: '100%',
+                        height: '100%',
+                        transform: mapTransform,
+                        transformOrigin: 'center center',
+                    }}
+                >
+                    {mapState.mapType === 'image' ? (
+                        <img src={mapState.mapUrl} alt="D&D Map" className="w-full h-full object-contain" draggable="false" />
+                    ) : (
+                        <video src={mapState.mapUrl} loop autoPlay muted className="w-full h-full object-contain" draggable="false" />
+                    )}
+                    <GridOverlay mapState={mapState} />
+                    <FogOfWarOverlay enabled={mapState.fogEnabled} fogShapes={mapState.fogShapes} />
+                </div>
+            ) : (
+              <div className="text-gray-500 text-2xl">Waiting for DM to load a map...</div>
+            )}
+
+            <button 
+              onClick={toggleFullscreen}
+              className="absolute bottom-4 right-4 bg-gray-800 bg-opacity-50 text-white p-2 rounded-full opacity-0 group-hover:opacity-100 transition-opacity focus:opacity-100"
+              aria-label="Toggle Fullscreen"
+              title="Toggle Fullscreen"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-1v4m0 0h-4m4 0l-5-5M4 16v4m0 0h4m-4 0l5-5m11 5v-4m0 0h-4m4 0l-5 5" />
+              </svg>
+            </button>
+          </div>
+        );
+      };
+
+      // The main view for the Dungeon Master, with all controls.
+      const DMView = () => {
+        const { useState, useRef } = React;
+        const { mapState, updateMapState } = useMapSync('dm');
+        const mapContainerRef = useRef(null);
+        const mapMediaRef = useRef(null);
+        const [playlist, setPlaylist] = useState([]);
+        const [activeMapIndex, setActiveMapIndex] = useState(null);
+        const [toolMode, setToolMode] = useState('pan'); // 'pan' or 'fog'
+        
+        const [interactionState, setInteractionState] = useState({ mode: 'idle', start: { x: 0, y: 0 }});
+        const [drawingRect, setDrawingRect] = useState(null);
+
+        const resetView = () => {
+            updateMapState({
+                zoom: 1,
+                pan: { x: 0, y: 0 },
+                rotation: 0,
+            });
+        };
+        
+        const handleRotate = () => {
+          updateMapState(s => ({ ...s, rotation: (s.rotation + 90) % 360 }));
+        };
+        
+        const resetFog = () => {
+            if (confirm('Are you sure you want to clear all fog changes (reset to full fog)?')) {
+                updateMapState({ fogShapes: [] });
+            }
+        };
+
+        const loadMap = (file, index) => {
+          if (!file) return;
+
+          setActiveMapIndex(index);
+          const reader = new FileReader();
+          reader.onload = (event) => {
+            const url = event.target.result;
+            const isVideo = file.type.startsWith('video');
+            const mapType = isVideo ? 'video' : 'image';
+            
+            const mediaElement = document.createElement(isVideo ? 'video' : 'img');
+            
+            mediaElement.onload = mediaElement.onloadedmetadata = () => {
+              const aspectRatio = mapType === 'image' 
+                ? mediaElement.naturalWidth / mediaElement.naturalHeight
+                : mediaElement.videoWidth / mediaElement.videoHeight;
+              
+              updateMapState({
+                  mapUrl: url,
+                  mapType: mapType,
+                  mapAspectRatio: isFinite(aspectRatio) && aspectRatio > 0 ? aspectRatio : 16/9,
+                  zoom: 1, pan: { x: 0, y: 0 }, rotation: 0,
+                  fogEnabled: true, fogShapes: [], // Reset fog on new map
+              });
+            };
+            
+            mediaElement.onerror = () => {
+                console.error("Error loading media element for aspect ratio calculation.");
+                 updateMapState({
+                    mapUrl: url,
+                    mapType: mapType,
+                    mapAspectRatio: 16/9,
+                    zoom: 1, pan: { x: 0, y: 0 }, rotation: 0,
+                    fogEnabled: true, fogShapes: [],
+                });
+            }
+
+            mediaElement.src = url;
+          };
+          reader.readAsDataURL(file);
+        };
+
+        const handleFolderSelect = (e) => {
+            const files = Array.from(e.target.files);
+            const supportedTypes = /^(image\/(jpeg|png|gif|webp))|(video\/(mp4|webm|ogg))$/;
+            
+            const validFiles = files.filter(file => 
+              supportedTypes.test(file.type) && (!file.webkitRelativePath || file.webkitRelativePath.split('/').length === 2)
+            );
+            
+            setPlaylist(validFiles);
+
+            if (validFiles.length > 0) {
+                loadMap(validFiles[0], 0);
+            } else {
+                setPlaylist([]);
+                setActiveMapIndex(null);
+                updateMapState({ mapUrl: null, mapType: null });
+                alert("No valid image or video files found in the selected folder's root directory.");
+            }
+        };
+
+        const handleWheel = (e) => {
+            e.preventDefault();
+            const ZOOM_SENSITIVITY = 0.001;
+            updateMapState(s => {
+              const newZoom = s.zoom - e.deltaY * ZOOM_SENSITIVITY;
+              return { ...s, zoom: Math.min(Math.max(0.1, newZoom), 10) };
+            });
+        };
+
+        const handleMouseDown = (e) => {
+            e.preventDefault();
+            if (!mapContainerRef.current) return;
+            let mode = 'idle';
+
+            // Middle mouse always pans
+            if (e.button === 1) {
+                mode = 'panning';
+            } else if (toolMode === 'pan' && e.button === 0) { // Left click in pan mode
+                mode = 'panning';
+            } else if (toolMode === 'fog' && mapState.fogEnabled) { // Clicks in fog mode
+                if (e.button === 0) mode = 'drawing_reveal'; // Left click
+                if (e.button === 2) mode = 'drawing_hide';   // Right click
+            }
+            
+            if (mode === 'panning' && mapContainerRef.current) {
+                mapContainerRef.current.style.cursor = 'grabbing';
+            }
+            
+            setInteractionState({ mode, start: { x: e.clientX, y: e.clientY } });
+        };
+
+        const handleMouseUp = (e) => {
+            e.preventDefault();
+            
+            let cursorStyle = 'default';
+            if (toolMode === 'pan') cursorStyle = 'grab';
+            else if (toolMode === 'fog' && mapState.fogEnabled) cursorStyle = 'crosshair';
+            
+            if (mapContainerRef.current) {
+                mapContainerRef.current.style.cursor = cursorStyle;
+            }
+
+            if (drawingRect) {
+                const finalRect = { ...drawingRect };
+                const type = interactionState.mode === 'drawing_reveal' ? 'reveal' : 'hide';
+                updateMapState(s => ({ ...s, fogShapes: [...s.fogShapes, { ...finalRect, type }] }));
+            }
+
+            setInteractionState({ mode: 'idle', start: { x: 0, y: 0 } });
+            setDrawingRect(null);
+        };
+
+        const handleMouseMove = (e) => {
+            if (interactionState.mode === 'idle') return;
+            e.preventDefault();
+
+            if (interactionState.mode === 'panning') {
+                const dx = e.clientX - interactionState.start.x;
+                const dy = e.clientY - interactionState.start.y;
+                setInteractionState(s => ({ ...s, start: { x: e.clientX, y: e.clientY } }));
+                updateMapState(s => ({ ...s, pan: { x: s.pan.x + dx, y: s.pan.y + dy } }));
+            } else if (interactionState.mode.startsWith('drawing')) {
+                const mapBounds = mapMediaRef.current?.getBoundingClientRect();
+                if (!mapBounds || mapBounds.width === 0) return;
+
+                const startXRel = (interactionState.start.x - mapBounds.left) / mapBounds.width;
+                const startYRel = (interactionState.start.y - mapBounds.top) / mapBounds.height;
+                const currentXRel = (e.clientX - mapBounds.left) / mapBounds.width;
+                const currentYRel = (e.clientY - mapBounds.top) / mapBounds.height;
+
+                const rect = {
+                    x: Math.min(startXRel, currentXRel),
+                    y: Math.min(startYRel, currentYRel),
+                    width: Math.abs(currentXRel - startXRel),
+                    height: Math.abs(currentYRel - startYRel),
+                };
+                setDrawingRect(rect);
+            }
+        };
+        
+        const openPlayerView = () => {
+          window.open(`${window.location.href.split('#')[0]}#/player`, '_blank');
+        };
+
+        const mapTransform = `translate(${mapState.pan.x}px, ${mapState.pan.y}px) scale(${mapState.zoom}) rotate(${mapState.rotation}deg)`;
+        
+        let cursorStyle = 'default';
+        if (mapState.mapUrl) {
+            if (interactionState.mode === 'panning') {
+                cursorStyle = 'grabbing';
+            } else if (toolMode === 'pan') {
+                cursorStyle = 'grab';
+            } else if (toolMode === 'fog' && mapState.fogEnabled) {
+                cursorStyle = 'crosshair';
+            }
+        }
+        
+        return (
+          <div className="flex h-screen bg-gray-800">
+            {/* --- CONTROLS SIDEBAR --- */}
+            <aside className="w-72 flex-shrink-0 bg-gray-900 p-4 flex flex-col space-y-2">
+              <h1 className="text-xl font-bold text-center mb-2">DM Controls</h1>
+              
+              <div>
+                <label htmlFor="map-folder-upload" className="w-full cursor-pointer bg-violet-600 hover:bg-violet-700 text-white font-bold py-2 px-4 rounded transition-colors text-center block">
+                  Load Map Folder
+                </label>
+                <input id="map-folder-upload" type="file" webkitdirectory="" directory="" multiple onChange={handleFolderSelect} className="hidden" />
+              </div>
+
+              <button onClick={openPlayerView} className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded transition-colors">
+                Open Player View
+              </button>
+              
+              <div className="grid grid-cols-2 gap-2">
+                <button onClick={resetView} className="bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded transition-colors">
+                  Reset View
+                </button>
+                <button onClick={handleRotate} className="bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded transition-colors">
+                  Rotate 90°
+                </button>
+              </div>
+
+              {/* --- Tool Mode --- */}
+              <div className="pt-2 border-t border-gray-700">
+                <h2 className="text-lg font-semibold my-2">Tool Mode</h2>
+                <div className="flex rounded-md shadow-sm">
+                  <button
+                    onClick={() => setToolMode('pan')}
+                    className={`flex-1 py-2 px-4 text-sm font-medium rounded-l-md transition-colors ${toolMode === 'pan' ? 'bg-blue-600 text-white' : 'bg-gray-600 hover:bg-gray-700'}`}
+                  >
+                    Pan & Zoom
+                  </button>
+                  <button
+                    onClick={() => setToolMode('fog')}
+                    disabled={!mapState.fogEnabled}
+                    className={`flex-1 py-2 px-4 text-sm font-medium rounded-r-md transition-colors ${toolMode === 'fog' ? 'bg-blue-600 text-white' : 'bg-gray-600 hover:bg-gray-700 disabled:bg-gray-800 disabled:text-gray-500 disabled:cursor-not-allowed'}`}
+                  >
+                    Edit Fog
+                  </button>
+                </div>
+              </div>
+              
+              {/* --- Grid Settings --- */}
+              <div className="pt-2 border-t border-gray-700 space-y-3">
+                <h2 className="text-lg font-semibold mt-2">Grid Settings</h2>
+                <label className="flex items-center justify-between cursor-pointer">
+                  <span>Show Grid</span>
+                  <input type="checkbox" checked={mapState.gridVisible} onChange={(e) => updateMapState({ gridVisible: e.target.checked })} className="form-checkbox h-5 w-5 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500" />
+                </label>
+                <div>
+                  <label htmlFor="grid-size" className="block text-sm font-medium">Size: {mapState.gridSize}px</label>
+                  <input type="range" id="grid-size" min="10" max="200" value={mapState.gridSize} onChange={(e) => updateMapState({ gridSize: Number(e.target.value) })} className="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer" />
+                </div>
+              </div>
+              
+              {/* --- Fog of War Settings --- */}
+              <div className="pt-2 border-t border-gray-700 space-y-3">
+                <h2 className="text-lg font-semibold mt-2">Fog of War</h2>
+                <label className="flex items-center justify-between cursor-pointer">
+                  <span>Enable Fog</span>
+                  <input type="checkbox" checked={mapState.fogEnabled} disabled={!mapState.mapUrl} onChange={(e) => updateMapState({ fogEnabled: e.target.checked })} className="form-checkbox h-5 w-5 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500 disabled:opacity-50" />
+                </label>
+                <button onClick={resetFog} disabled={!mapState.fogEnabled} className="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded transition-colors disabled:bg-gray-600 disabled:cursor-not-allowed">
+                  Clear Fog
+                </button>
+              </div>
+
+
+              {/* --- Map Playlist --- */}
+              {playlist.length > 0 && (
+                <div className="pt-2 border-t border-gray-700 flex-grow flex flex-col min-h-0">
+                  <h2 className="text-lg font-semibold my-2 flex-shrink-0">Map Playlist</h2>
+                  <ul className="map-playlist overflow-y-auto flex-grow pr-1">
+                    {playlist.map((file, index) => (
+                      <li key={file.name + index}>
+                        <button onClick={() => loadMap(file, index)} className={`w-full text-left text-sm p-2 rounded truncate transition-colors ${activeMapIndex === index ? 'bg-blue-600 text-white' : 'hover:bg-gray-700'}`} title={file.name}>
+                          {file.name}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              
+              {/* --- Instructions --- */}
+              <div className="text-xs text-gray-400 space-y-1 pt-2 border-t border-gray-700 mt-auto flex-shrink-0">
+                  <p className="font-bold">How to Use:</p>
+                  <p>1. Load a folder of maps.</p>
+                  <p>2. Open Player View in a new window/screen.</p>
+                  <p>3. Use Tool Mode to switch between Pan/Fog.</p>
+                  <p>4. Pan: Left-drag pans, Scroll zooms.</p>
+                  <p>5. Fog: Left-drag reveals, Right-drag hides.</p>
+                  <p>6. Middle-drag always pans.</p>
+              </div>
+            </aside>
+            
+            {/* --- MAP PREVIEW AREA --- */}
+            <main 
+              className="flex-1 flex items-center justify-center p-4 bg-black overflow-hidden"
+              onMouseDown={handleMouseDown}
+              onMouseMove={handleMouseMove}
+              onMouseUp={handleMouseUp}
+              onMouseLeave={handleMouseUp}
+              onContextMenu={(e) => e.preventDefault()}
+            >
+              {mapState.mapUrl ? (
+                <div 
+                  ref={mapContainerRef}
+                  className="relative select-none w-full h-full" 
+                  style={{ cursor: cursorStyle }}
+                  onWheel={handleWheel}
+                >
+                    <div 
+                      style={{
+                        width: '100%', 
+                        height: '100%', 
+                        transform: mapTransform,
+                        transformOrigin: 'center center',
+                      }}
+                    >
+                      {mapState.mapType === 'image' ? (
+                        <img ref={mapMediaRef} src={mapState.mapUrl} alt="D&D Map" className="w-full h-full object-contain" draggable="false" />
+                      ) : (
+                        <video ref={mapMediaRef} src={mapState.mapUrl} loop autoPlay muted className="w-full h-full object-contain" draggable="false" />
+                      )}
+                      <GridOverlay mapState={mapState} />
+                      <FogOfWarOverlay enabled={mapState.fogEnabled} fogShapes={mapState.fogShapes} isDMView={true} />
+                      <DrawingOverlay drawingRect={drawingRect} mode={interactionState.mode === 'drawing_reveal' ? 'reveal' : 'hide'} />
+                    </div>
+                </div>
+              ) : (
+                  <div className="w-full h-full flex items-center justify-center bg-gray-700 text-gray-400 rounded-lg">
+                      <div className="text-center">
+                          <p className="text-lg font-semibold">Load a map folder to begin</p>
+                          <p className="text-sm text-gray-500">Only files in the folder's root will be shown.</p>
+                      </div>
+                  </div>
+              )}
+            </main>
+          </div>
+        );
+      };
+      
+      // Main App component that handles routing between DM and Player views.
+      const App = () => {
+        const { useState, useEffect, useCallback } = React;
+        const [view, setView] = useState('dm');
+
+        const handleHashChange = useCallback(() => {
+          setView(window.location.hash === '#/player' ? 'player' : 'dm');
+        }, []);
+
+        useEffect(() => {
+          window.addEventListener('hashchange', handleHashChange);
+          handleHashChange(); // Set initial view
+          return () => window.removeEventListener('hashchange', handleHashChange);
+        }, [handleHashChange]);
+
+        return (
+          <React.Fragment>
+            {view === 'dm' ? <DMView /> : <PlayerView />}
+          </React.Fragment>
+        );
+      };
+
+      // --- RENDER THE APP ---
+      const rootElement = document.getElementById('root');
+      if (rootElement) {
+        const root = ReactDOM.createRoot(rootElement);
+        root.render(<App />);
+      } else {
+        console.error('Failed to find the root element');
+      }
+
+    </script>
+  </body>
+</html>
