@@ -1,5 +1,5 @@
 {
-  "name": "D&D Map Tool v1.1",
+  "name": "TV-RPG-Companion v1.3",
   "description": "A simple, local-first D&D map tool for displaying image or video maps on a second screen with a fog of war feature. Includes a DM view for controlling the map and a separate player view.",
   "requestFramePermissions": []
 }
