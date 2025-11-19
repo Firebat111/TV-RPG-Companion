@@ -1,20 +1,11 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
-
-# Run and deploy your AI Studio app
-
-This contains everything you need to run your app locally.
-
-View your app in AI Studio: https://ai.studio/apps/drive/1X992CgfjlvOlsuVFyxYpDA4LvaxIpNsa
-
 ## Run Locally
 
-**Prerequisites:**  Node.js
-
-
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+1) Download .zip file
+2) Extract
+3) Run Index.html
+4) How to Use
+Load Map: Select a folder.
+Pan/Zoom: 'Pan & Zoom' mode.
+Fog: 'Edit Fog'. Left to reveal, Right to hide.
+Player View: Open separate window.
+Tip: Middle mouse always pans.
