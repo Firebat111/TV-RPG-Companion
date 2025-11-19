@@ -14,3 +14,8 @@ Fog: 'Edit Fog'. Left Click to reveal, Right Click to hide.
 Player View: Open separate window.
 
 Tip: Middle mouse always pans.
+
+
+![DM Controls](DM Controls.png)
+
+![Player view](Player view.png)
