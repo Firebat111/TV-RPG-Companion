@@ -1,4 +1,4 @@
-## Run Locally
+This simple tool will allow you to display static and animated maps. It is designed for use with a TV for in person D&D play.
 
 1) Download .zip file
 2) Extract
