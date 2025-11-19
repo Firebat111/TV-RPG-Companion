@@ -9,7 +9,7 @@ Load Map: Select a folder.
 
 Pan/Zoom: 'Pan & Zoom' mode.
 
-Fog: 'Edit Fog'. Left to reveal, Right to hide.
+Fog: 'Edit Fog'. Left Click to reveal, Right Click to hide.
 
 Player View: Open separate window.
 
